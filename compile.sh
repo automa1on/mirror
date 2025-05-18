@@ -1,0 +1,1 @@
+gcc  mirror.c -lm -g -c
