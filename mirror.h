@@ -9,7 +9,7 @@
 typedef long MirrorCBGetArrlen(const char *structname, const char *field, void *data);
 
 typedef enum MirrorErrcode {
-	MIRROR_SUCCESS = 1, // not 0 because functions that normally return positive values, return a negated errcode
+	MIRROR_SUCCESS = 0,
 	MIRROR_EINVAL,
 	MIRROR_ENOENT,
 	MIRROR_EOOBND, // out of bounds, array
@@ -33,7 +33,6 @@ struct _mirror_unparsed_entry {
 	bool isfarr;
 	int length;
 
-	const char *lenfield;
 
 	int typesize;
 };
@@ -47,8 +46,7 @@ struct _mirror_entry {
 	bool isfarr; // is fixed-length array
 	int farrlen;
 
-	const char *lenfield; // name of the field that has the dynamic arrays length
-
+	int annots_len;
 	struct _mirror_annot annot;
 
 	struct {
@@ -67,8 +65,11 @@ struct _mirror_entry {
 			MirrorPrimitiveFloat,
 			MirrorPrimitiveDFloat, // double
 		
+			MirrorPrimitiveStruct,
+
 			MirrorPrimitiveEnd,
 		} prim;
+		const char *structname;
 	} type;
 };
 
@@ -77,15 +78,20 @@ struct _mirror_struct {
 
 	int entries_len;
 	struct _mirror_entry *entries;
+
 };
+
+struct _mirror_struct *MirrorGetStruct(const char *pname);
 
 int MirrorGetField(struct _mirror_struct *s, const char* name);
 bool MirrorFieldIsNum(struct _mirror_struct *strct, int entrynum);
 bool MirrorFieldIsArr(struct _mirror_struct *strct, int entrynum);
+bool MirrorFieldIsStruct(struct _mirror_struct *strct, int entrynum);
+bool MirrorFieldIsStr(struct _mirror_struct *strct, int entrynum);
 
-ssize_t _MirrorGetFieldArrLen(struct _mirror_struct *strct, int entrynum, void *pdata);
+ssize_t _MirrorGetFieldArrLen(struct _mirror_struct *strct, int entrynum, const void *pdata);
 
-int MirrorSetFieldArrNum(struct _mirror_struct *strct, const char *field,
+MirrorErrcode MirrorSetFieldArrNum(struct _mirror_struct *strct, const char *field,
 	int idxnum, void *pdata, double pnum);
 
 int MirrorSetFieldNum(struct _mirror_struct *s, const char *fieldname, void *data, double value);
@@ -111,6 +117,8 @@ int _MirrorGetFieldArrNum(struct _mirror_struct *strct, int fieldnum, int idxnum
 
 	#undef STRUCT_FIELD_ANNOTATION
 
+	#undef MIRROR_TYPEDEF
+
 #endif
 
 
@@ -132,11 +140,16 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 	#define BEGIN_STRUCT(n) _BEGIN_STRUCT_FR(n)
 	#define END_STRUCT() {.invalid=1} }; _mirror_init_struct(_name, _cnoprsr, strct); }
 	#define STRUCT_FIELD(typ, nam) {.type=#typ, .name=#nam, .offset=_GETFOFF(nam), .typesize=sizeof(typ)},
-	#define STRUCT_FIELD_ARRAY(typ,nam) {.type=#typ, .name=#nam, .offset=_GETFOFF(nam), .lenfield="#lenfiel", .typesize=sizeof(typ)},
+	#define STRUCT_FIELD_ARRAY(typ,nam) \
+				{.type=#typ "*" /* way for the parser to know its an array */, \
+					.name=#nam , .offset=_GETFOFF(nam), .typesize=sizeof(typ)},
+
 	#define STRUCT_FIELD_FIXED_ARRAY(typ, nam, len) {.type=#typ, .name=#nam, .offset= _GETFOFF(nam), .length=len, .isfarr=true, .typesize=sizeof(typ) },
 
 
 	#define STRUCT_FIELD_ANNOTATION(ann,data) {.isannotation=true, .annot={.annottype=ann, .annotdata=data}},
+
+	#define MIRROR_TYPEDEF(type, alias) // TODO
 
 #elif defined(MIRROR_INIT_NONSCOPE)
 	#define BEGIN_STRUCT(n)	struct _mirror_struct _mirror_struct_##n;\
@@ -148,6 +161,8 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 	#define END_STRUCT() 
 
 	#define STRUCT_FIELD_ANNOTATION(annot,d)
+
+	#define MIRROR_TYPEDEF(type, alias)
 
 #else
 
@@ -161,5 +176,7 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 	#define END_STRUCT() };
 
 	#define STRUCT_FIELD_ANNOTATION(annot,d)
+
+	#define MIRROR_TYPEDEF(type, alias) typedef type alias;
 #endif
 

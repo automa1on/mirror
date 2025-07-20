@@ -1,4 +1,5 @@
 #include "mirror.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,12 +24,36 @@ static const char *getprimitive(const char *type) { // not implemented
 #define unreachable() __builtin_unreachable()
 
 
+static struct _mirror_annot *get_annot(struct _mirror_annot annots[], const int annot_len, const char *prefix) {
+	short prfxlen = strlen(prefix);
+	for(int i = 0; i < annot_len; i++) {
+		if(! annots[i].annottype)
+			continue;
+		if(strncmp(annots[i].annottype, prefix, prfxlen) == 0)
+			return &annots[i];
+	}
+
+	return NULL;
+}
+
+bool MirrorFieldIsStr(struct _mirror_struct *strct, int entrynum) {
+	struct _mirror_entry *e = strct->entries+entrynum;
+	if(get_annot(&e->annot, 1, "S"))
+		return true;
+
+	if(e->loi == 1 && e->type.purechar) return true; // string
+
+	return false;
+}
+
 bool MirrorFieldIsNum(struct _mirror_struct *strct, int entrynum) {
 	struct _mirror_entry *e = strct->entries+entrynum;
 
-	if(e->loi > 0 || e->isfarr) return false;
-	if(e->type.prim != MirrorPrimitiveVoid) return true;
+	//if(e->loi > 0 || e->isfarr) return false;
+	if(e->loi == 1 && e->type.purechar) return false; // string
+	if(e->type.prim != MirrorPrimitiveVoid && e->type.prim != MirrorPrimitiveStruct) return true;
 
+	//mirror_log("prim: %d, %s", e->type.prim, e->name);
 	return false;
 }
 bool MirrorFieldIsArr(struct _mirror_struct *strct, int entrynum) {
@@ -36,31 +61,44 @@ bool MirrorFieldIsArr(struct _mirror_struct *strct, int entrynum) {
 	return( !(e->loi == 1 && e->type.purechar) &&
 		(e->loi > 0 || e->isfarr) );
 }
+bool MirrorFieldIsStruct(struct _mirror_struct *strct, int entrynum) {
+	struct _mirror_entry *e = strct->entries+entrynum;
+	return e->type.prim == MirrorPrimitiveStruct;
+}
 
-ssize_t _MirrorGetFieldArrLen(struct _mirror_struct *strct, int entrynum, void *pdata) {
+ssize_t _MirrorGetFieldArrLen(struct _mirror_struct *strct, int entrynum, const void *pdata) {
 	struct _mirror_entry *e = strct->entries+entrynum;
 	if(e->farrlen)
 		return e->farrlen;
-	
-	if(e->annot.annottype[0] != 't')
-		return -MIRROR_EINVAL;
 
-	if(e->annot.annottype[1] != 'l') // or s (sentinel) which is not implemented
-		return -MIRROR_EINVAL;
-
-	if(e->annot.annottype[2] == 'f') { // lenfield
+	if(get_annot(&e->annot, 1, "P")) { // is pointer?
 		double num;
-		printf("%s, %d\n",(char*)e->annot.annotdata, MirrorGetField(strct, e->annot.annotdata));
-		int code = _MirrorGetFieldNum(&strct->entries[ MirrorGetField(strct, e->annot.annotdata) ], 
+		_MirrorGetFieldNum(e, pdata, &num);
+		return 1 ? num : 0; // check if pointer is NULL or not
+	}
+	
+	if(get_annot(&e->annot, 1, "atl") == NULL)
+		return -MIRROR_ENOENT;
+
+
+	if(e->annot.annottype[3] == 'f') { // lenfield
+		double num;
+		int fld =  MirrorGetField(strct, e->annot.annotdata);
+		if(fld < 0)
+			return fld;
+		
+		//mirror_log("%s, %d\n",(char*)e->annot.annotdata, fld);
+
+		int code = _MirrorGetFieldNum(&strct->entries[fld], 
 			pdata, &num);
 		if(code != MIRROR_SUCCESS)
 			return -code;
 
 		return num;
-	} else if(e->annot.annottype[2] == 'c') { // callback
+	} else if(e->annot.annottype[3] == 'c') { // callback
 		MirrorCBGetArrlen *f = e->annot.annotdata;
-		return f(strct->name, e->name, pdata);
-	}
+		return f(strct->name, e->name, (void*)pdata);
+	} // else if( == 's') // sentinel
 
 	return -MIRROR_EINVAL;
 }
@@ -95,6 +133,7 @@ static MirrorErrcode get_number(double *pnum, const char *data, enum mirror_prim
 		
 			break;
 		
+		case MirrorPrimitiveStruct:
 		case MirrorPrimitiveVoid:
 		case MirrorPrimitiveEnd:
 			return MIRROR_EINVAL;
@@ -125,16 +164,23 @@ int MirrorGetField(struct _mirror_struct *s, const char* name) {
 
 int MirrorGetFieldNum(struct _mirror_struct *s, const char *fieldname, const void *pdata, double *pnum) {
 	int n = MirrorGetField(s, fieldname);
-	if(n<0) return +n;
+	if(n < 0)
+		return +n;
+	
 	return _MirrorGetFieldNum(s->entries+n, pdata, pnum);
 }
 
 
-static int set_number(double value, char *data, enum mirror_primitive prim, bool issigned) {
+static int set_number(double value, char *data, enum mirror_primitive prim, bool issigned, int loi) {
 	#define p(lc,uc,rest)	case MirrorPrimitive##uc##rest:									\
 							if(issigned) *(signed lc##rest*)data = value;			\
 							else					 *(unsigned lc##rest*)data = value;		\
 							return MIRROR_SUCCESS;
+
+	if(loi > 0) {
+		*(void**)data = (void*)(uintmax_t)value;
+		return MIRROR_SUCCESS;
+	}
 
 	switch(prim) {
 		case MirrorPrimitiveDFloat:
@@ -153,6 +199,7 @@ static int set_number(double value, char *data, enum mirror_primitive prim, bool
 		p(i,I,nt)
 		p(l,L,ong)
 
+		case MirrorPrimitiveStruct:
 		case MirrorPrimitiveEnd:
 		case MirrorPrimitiveVoid:
 			return MIRROR_EINVAL;
@@ -165,13 +212,15 @@ int _MirrorSetFieldNum(double value, struct _mirror_entry *e, void *pdata) {
 	char *data = pdata;
 	data+=e->offset;
 
-	return set_number(value, data, e->type.prim, e->type.issigned);
+	return set_number(value, data, e->type.prim, e->type.issigned, e->loi);
 }
 
 
 int _MirrorGetFieldArrNum(struct _mirror_struct *strct, int fieldnum, int idxnum, const void *pdata, double *pnum) {
 	const char *data = pdata;
 	struct _mirror_entry *e = strct->entries+fieldnum;
+
+	//mirror_log("arm: %s", e->name);
 	if(e->isfarr) {
 		data += e->offset;
 		data += idxnum * e->type.size;
@@ -179,8 +228,12 @@ int _MirrorGetFieldArrNum(struct _mirror_struct *strct, int fieldnum, int idxnum
 	}
 
 	data += e->offset;
+
+	//mirror_log("%s: %p", e->name, *(void**)data);
 	data = *(void**)data;
+
 	data += idxnum * e->type.size;
+	//mirror_log("%p", data);
 
 	return get_number(pnum, data, e->type.prim, e->type.issigned);
 
@@ -195,7 +248,7 @@ int _MirrorSetFieldArrNum(struct _mirror_struct *strct, int fieldnum, int idxnum
 		data = *(void**)data;
 		data += idxnum * e->type.size;
 		
-		return set_number(pnum, data, e->type.prim, e->type.issigned);
+		return set_number(pnum, data, e->type.prim, e->type.issigned, e->loi);
 	}
 		
 
@@ -205,7 +258,7 @@ int _MirrorSetFieldArrNum(struct _mirror_struct *strct, int fieldnum, int idxnum
 	data += e->offset;
 	data += idxnum * e->type.size;
 
-	return set_number(pnum, data, e->type.prim, e->type.issigned);
+	return set_number(pnum, data, e->type.prim, e->type.issigned, e->loi);
 }
 
 int MirrorSetFieldNumTrunc(double value, struct _mirror_entry *e, void *data) {
@@ -226,13 +279,11 @@ int MirrorSetFieldNum(struct _mirror_struct *s, const char *fieldname, void *dat
 
 static struct _mirror_struct *structs = NULL;
 
-static struct _mirror_entry *entry_array;
-static int entry_array_len;
 
 static enum mirror_primitive getprimfrombarestr(const char *type) {
 	static struct {
 		const char *name;
-	} primtable[MirrorPrimitiveEnd] = {
+	} primtable[MirrorPrimitiveStruct] = {
 		#define p(lc,uc,rest) [MirrorPrimitive##uc##rest] = #lc #rest,
 		p(s,S,hort)
 		p(c,C,har)
@@ -248,16 +299,16 @@ static enum mirror_primitive getprimfrombarestr(const char *type) {
 	};
 
 	int prim = MirrorPrimitiveEnd;
-	for(int pti = 0; pti < MirrorPrimitiveEnd; pti++) {
+	for(int pti = 0; pti < MirrorPrimitiveStruct; pti++) {
 		if(strcmp(type, primtable[pti].name) == 0) {
 			return pti;
 		}
 	}
 
-	/*if(prim == MirrorPrimitiveEnd)*/ {
-		mirror_log("unknown type: %s", type);
-		abort();
-	}
+
+	mirror_log("unknown type: %s", type);
+	abort();
+	
 
 	
 	unreachable();
@@ -266,16 +317,28 @@ static enum mirror_primitive getprimfrombarestr(const char *type) {
 static struct structll_entry {
 	struct _mirror_struct *strct;
 	struct structll_entry *next;
-} structll;
+} structll = {0};
 
-static struct structll_entry *structll_last=NULL;
+static struct structll_entry *structll_last=&structll;
+
+struct _mirror_struct *MirrorGetStruct(const char *pname) {
+	struct structll_entry *e = &structll;
+	do {
+		mirror_log("%s\n", e->strct->name);
+		if(streq(e->strct->name, pname)) {
+			return e->strct;
+		}
+	} while(( e = e->next ));
+
+	return NULL;
+}
 
 int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[], 
 						struct _mirror_struct *strct)
 {
 	int i;
 
-	printf("struct name: %s\nfields:\n", name);
+	mirror_log("struct name: %s\nfields:\n", name);
 
 	int entry_len = 1;
 	struct _mirror_unparsed_entry *e = &entries[0];
@@ -285,7 +348,7 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 	}
 
 	for(i = 1; !e->invalid; e = &entries[i], i++) {
-		printf("\t%s %s, offset: %d, isfarr: %d\n", e->type, e->name, e->offset, e->isfarr);
+		mirror_log("\t%s %s, offset: %d, isfarr: %d", e->type, e->name, e->offset, e->isfarr);
 	}
 	entry_len = i-1;
 
@@ -304,22 +367,40 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 		struct _mirror_entry *pe = &pentries[pei];
 
 		{
-			char *type = strdup(e->type);
+			char *type = calloc(strlen(e->type)+1, 1);
 
-			for(int stri = strlen(type)-1; stri >= 0; stri--) {
-				if(type[stri] == '*') {
-					pe->loi++;
-					type[stri]=0;
+			for(int stri = 0, typei = 0; 
+				stri < strlen(e->type); stri++) 
+			{
+				switch(e->type[stri]) {
+					case '*':
+						pe->loi++;
+						break;
+					case ' ':
+						if(!(type[typei-1] == '*' || type[typei+1] == '*')) {
+							type[typei] = e->type[stri];
+							typei++;
+						} else
+							break;
+						
+					default:
+						type[typei] = e->type[stri];
+						typei++;
+						break;
 				}
 
 			}
+			if(strncmp("struct ", type, sizeof "struct "-1) == 0) {
+				pe->type.prim = MirrorPrimitiveStruct;
+				pe->type.structname = type + sizeof "struct ";
+			}
 
-			if(strncmp("signed", type, sizeof("signed")-1) == 0)
-				type+=sizeof("signed")-0;
+			else if(strncmp("signed", type, sizeof("signed")-1) == 0)
+				type+=sizeof "signed";
 
-			if(strncmp("unsigned", type, sizeof("unsigned")-1) == 0) {
-				if(type[sizeof("unsigned")-1] == ' ') { // no implicit "int"
-					mirror_log("ther ismore");
+			else if(strncmp("unsigned", type, sizeof("unsigned")-1) == 0) {
+				if(type[sizeof "unsigned" -1] == ' ') { // no implicit "int"
+					//mirror_log("ther ismore");
 
 					pe->type.prim = getprimfrombarestr(&type[sizeof("unsigned ")-1]);
 
@@ -328,6 +409,8 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 			} else {
 				pe->type.issigned = true;
 				pe->type.prim = getprimfrombarestr(type);
+				if(pe->type.prim == MirrorPrimitiveChar)
+					pe->type.purechar = true;
 			}
 		}
 
@@ -335,30 +418,36 @@ int _mirror_init_struct(const char *name, struct _mirror_unparsed_entry entries[
 		pe->name = strdup(e->name);
 		pe->isfarr = e->isfarr;
 		pe->farrlen = e->length;
-		pe->lenfield = e->lenfield;
 		pe->type.size = e->typesize;
 
 		if(i > 0 && entries[i-1].isannotation) {
 			memcpy(&pe->annot, &( (e-1)->annot), sizeof pe->annot );
 		}
 
-		printf("%d\n", pe->type.issigned);
+		mirror_log("%d, %d, %s", pe->type.prim, pe->type.issigned, pe->name);
 	}
-
-	//entry_array_len=entry_len;
-	//entry_array=pentries;
+	entry_len = pei;
 
 	strct->entries = pentries;
+	strct->name = strdup(name);
 	strct->entries_len = entry_len;
+	if(structll_last->strct == NULL)
+		return structll_last->strct = strct, 
+			true;
+
+	structll_last->next = calloc(1, sizeof *structll_last);
+	structll_last = structll_last->next;
+	structll_last->strct = strct;
+
 
 	return true;
 }
 
-int MirrorSetFieldArrNum(struct _mirror_struct *strct, const char *field,
+MirrorErrcode MirrorSetFieldArrNum(struct _mirror_struct *strct, const char *field,
 	int idxnum, void *pdata, double pnum)
 {
 	int n = MirrorGetField(strct, field);
-	if(n<0) return n;
+	if(n < 0) return +n;
 	//if(strct->entries[n].isfarr || strct->entries[n].annot.annottype)
 
 	return _MirrorSetFieldArrNum(strct, n, idxnum, pdata, pnum);

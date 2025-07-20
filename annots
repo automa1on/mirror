@@ -1,0 +1,11 @@
+a: array
+	t: terminator
+		l: length
+			f: field
+			c: callback
+		
+		s: sentinel
+
+H: hidden
+P: pointer
+S: string

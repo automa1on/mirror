@@ -2,16 +2,25 @@
 
 #include "sdefshortbegin.h"
 
+
+typedef(int, bea)
+
+b(inside_ses)
+	f(int, ises_int)
+e()
+
 b(ses)
-	f(void*, ae)
 
 	f(float, floating)
 
 	f(short, shorter)
 	
+
 	arrf(short, aed, aed_len)
 
-	ann("tlc", testarrlencb)
+
+
+	ann("atlc", testarrlencb)
 	arr(long, tlc)
 
 	farr(int, intarray, 47)
@@ -22,14 +31,17 @@ b(ses)
 	farr(int, charray, 64)
 	
 
-	arrf(long, dynarr, dynarr)
+	arrf(long, dynarr, dynarr_len)
 
 	f(int, aed_len)
-e()
 
-//b(newstruct)
-//    
-//e()
+	f(struct inside_ses, nested)
+
+	f(char, dynarr_len)
+
+	f(char*, justAstring)
+
+e()
 
 
 #include "sdefshortend.h"

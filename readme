@@ -1,0 +1,11 @@
+mirror - reflection in C
+not production ready.
+
+what's supported:
+	structs
+	pointers and arrays
+	primitive types
+
+what's not yet:
+	typedefs
+
