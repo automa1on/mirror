@@ -1,6 +1,8 @@
 mirror - reflection in C
 not production ready.
 
+assumes all pointers are the same size.
+
 what's supported:
 	structs
 	pointers and arrays
